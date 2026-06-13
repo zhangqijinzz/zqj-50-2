@@ -22,9 +22,11 @@ export function Ingredients() {
     updatePurchaseDate,
     updateStockQuantity,
     getStockQuantity,
-    stockIngredients,
+    getStockWithStatus,
     addCustomIngredient,
   } = useStore();
+
+  const stockIngredients = getStockWithStatus();
 
   const ingredients = getIngredientsByCategory(activeCategory);
   const categoryInfo = CATEGORY_LABELS[activeCategory];

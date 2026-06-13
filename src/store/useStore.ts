@@ -12,6 +12,7 @@ import type {
   RecipeIngredient,
 } from '@/types';
 import { INGREDIENTS, INGREDIENT_MAP } from '@/data/ingredients';
+import type { UnitType } from '@/types';
 import { RECIPES } from '@/data/recipes';
 
 interface StoreState {
@@ -59,6 +60,38 @@ const getExpiryStatus = (remainingDays: number): ExpiryStatus => {
   return 'fresh';
 };
 
+const getSafeQuantity = (
+  item: { quantity?: unknown; id: string },
+  ingredientMap: Record<string, Ingredient>,
+  customList: Ingredient[]
+): number => {
+  if (
+    typeof item.quantity === 'number' &&
+    !Number.isNaN(item.quantity) &&
+    item.quantity > 0
+  ) {
+    return item.quantity;
+  }
+  const base = ingredientMap[item.id];
+  if (base) return base.defaultQuantity;
+  const custom = customList.find((c) => c.id === item.id);
+  return custom?.defaultQuantity ?? 1;
+};
+
+const getSafeUnit = (
+  item: { unit?: unknown; id: string },
+  ingredientMap: Record<string, Ingredient>,
+  customList: Ingredient[]
+): UnitType => {
+  if (item.unit === 'piece' || item.unit === 'gram' || item.unit === 'pack') {
+    return item.unit;
+  }
+  const base = ingredientMap[item.id];
+  if (base) return base.defaultUnit;
+  const custom = customList.find((c) => c.id === item.id);
+  return custom?.defaultUnit ?? 'piece';
+};
+
 const initialPreferences: UserPreferences = {
   onePot: false,
   quickMeal: false,
@@ -78,12 +111,14 @@ export const useStore = create<StoreState>()(
           get().customIngredients.find(i => i.id === ingredientId);
         if (!base) return;
 
+        const customList = get().customIngredients;
         const existing = get().stockIngredients.find(s => s.id === ingredientId);
         if (existing) {
-          const newQty = (quantity ?? base.defaultQuantity) + existing.quantity;
+          const existingQty = getSafeQuantity(existing, INGREDIENT_MAP, customList);
+          const newQty = (quantity ?? base.defaultQuantity) + existingQty;
           set({
             stockIngredients: get().stockIngredients.map(s =>
-              s.id === ingredientId ? { ...s, quantity: newQty } : s
+              s.id === ingredientId ? { ...s, quantity: newQty, unit: getSafeUnit(s, INGREDIENT_MAP, customList) } : s
             ),
           });
           return;
@@ -108,12 +143,20 @@ export const useStore = create<StoreState>()(
 
       isInStock: (ingredientId) => {
         const stock = get().stockIngredients.find(s => s.id === ingredientId);
-        return stock ? stock.quantity > 0 : false;
+        if (!stock) return false;
+        return get().getStockQuantity(ingredientId) > 0;
       },
 
       getStockQuantity: (ingredientId) => {
         const stock = get().stockIngredients.find(s => s.id === ingredientId);
-        return stock ? stock.quantity : 0;
+        if (!stock) return 0;
+        if (typeof stock.quantity === 'number' && !Number.isNaN(stock.quantity) && stock.quantity > 0) {
+          return Math.max(0, stock.quantity);
+        }
+        const base = INGREDIENT_MAP[ingredientId];
+        if (base) return base.defaultQuantity;
+        const custom = get().customIngredients.find((c) => c.id === ingredientId);
+        return custom?.defaultQuantity ?? 1;
       },
 
       updateStockQuantity: (ingredientId, quantity) => {
@@ -143,6 +186,15 @@ export const useStore = create<StoreState>()(
         const consumed: string[] = [];
         const insufficient: string[] = [];
         const newStock = [...get().stockIngredients];
+        const customIngredients = get().customIngredients;
+
+        const getSafeQty = (item: StockIngredient): number => {
+          return getSafeQuantity(item, INGREDIENT_MAP, customIngredients);
+        };
+
+        const getSafeUnitLocal = (item: StockIngredient): UnitType => {
+          return getSafeUnit(item, INGREDIENT_MAP, customIngredients);
+        };
 
         for (const ri of recipe.requiredIngredients) {
           if (ri.amount <= 0) continue;
@@ -154,19 +206,21 @@ export const useStore = create<StoreState>()(
           }
 
           const stockItem = newStock[idx];
-          if (stockItem.quantity < ri.amount) {
+          const safeQty = getSafeQty(stockItem);
+          const safeUnit = getSafeUnitLocal(stockItem);
+          if (safeQty < ri.amount) {
             insufficient.push(ri.id);
-            if (stockItem.quantity > 0) {
+            if (safeQty > 0) {
               consumed.push(ri.id);
             }
-            newStock[idx] = { ...stockItem, quantity: 0 };
+            newStock[idx] = { ...stockItem, quantity: 0, unit: safeUnit };
           } else {
-            const newQty = stockItem.quantity - ri.amount;
+            const newQty = safeQty - ri.amount;
             consumed.push(ri.id);
             if (newQty <= 0) {
               newStock.splice(idx, 1);
             } else {
-              newStock[idx] = { ...stockItem, quantity: newQty };
+              newStock[idx] = { ...stockItem, quantity: newQty, unit: safeUnit };
             }
           }
         }
@@ -200,12 +254,22 @@ export const useStore = create<StoreState>()(
         const now = today();
         return get().stockIngredients
           .map((s) => {
-            const expiryDate = new Date(s.purchaseDate);
-            expiryDate.setDate(expiryDate.getDate() + s.shelfLifeDays);
+            const base = INGREDIENT_MAP[s.id];
+            const safeUnit = s.unit ?? base?.defaultUnit ?? 'piece';
+            const safeQty =
+              typeof s.quantity === 'number' && !Number.isNaN(s.quantity)
+                ? Math.max(0, s.quantity)
+                : base?.defaultQuantity ?? 1;
+            const safeShelfLife = s.shelfLifeDays ?? base?.shelfLifeDays ?? 7;
+            const expiryDate = new Date(s.purchaseDate || now);
+            expiryDate.setDate(expiryDate.getDate() + safeShelfLife);
             const expiryStr = expiryDate.toISOString().split('T')[0];
             const remainingDays = daysBetween(now, expiryStr);
             return {
               ...s,
+              unit: safeUnit,
+              quantity: safeQty,
+              shelfLifeDays: safeShelfLife,
               remainingDays,
               status: getExpiryStatus(remainingDays),
             };
@@ -224,13 +288,18 @@ export const useStore = create<StoreState>()(
       },
 
       getStockIds: () => {
-        return get().stockIngredients.filter(s => s.quantity > 0).map((s) => s.id);
+        const customList = get().customIngredients;
+        return get().stockIngredients.filter(s => {
+          const safeQty = getSafeQuantity(s, INGREDIENT_MAP, customList);
+          return safeQty > 0;
+        }).map((s) => s.id);
       },
 
       getMatchedRecipes: () => {
+        const customList = get().customIngredients;
         const stockMap: Record<string, number> = {};
         for (const s of get().stockIngredients) {
-          stockMap[s.id] = s.quantity;
+          stockMap[s.id] = getSafeQuantity(s, INGREDIENT_MAP, customList);
         }
 
         const matched: MatchedRecipe[] = [];
@@ -314,11 +383,157 @@ export const useStore = create<StoreState>()(
     }),
     {
       name: 'kitchen-rescue-storage',
+      version: 3,
       partialize: (state) => ({
         stockIngredients: state.stockIngredients,
         preferences: state.preferences,
         customIngredients: state.customIngredients,
       }),
+      migrate: (persistedState: unknown, version: number) => {
+        const state = persistedState as Partial<{
+          stockIngredients: any[];
+          customIngredients: any[];
+          preferences: UserPreferences;
+        }>;
+
+        const getIngredientDefault = (id: string, customList: any[] | undefined) => {
+          const base = INGREDIENT_MAP[id];
+          if (base) {
+            return { defaultUnit: base.defaultUnit, defaultQuantity: base.defaultQuantity };
+          }
+          const custom = customList?.find((c) => c.id === id);
+          if (custom) {
+            return {
+              defaultUnit: custom.defaultUnit ?? 'piece',
+              defaultQuantity:
+                typeof custom.defaultQuantity === 'number' && !Number.isNaN(custom.defaultQuantity)
+                  ? custom.defaultQuantity
+                  : 1,
+            };
+          }
+          return { defaultUnit: 'piece' as UnitType, defaultQuantity: 1 };
+        };
+
+        if (version < 1) {
+          if (Array.isArray(state.stockIngredients)) {
+            state.stockIngredients = state.stockIngredients.map((item) => {
+              const { defaultUnit, defaultQuantity } = getIngredientDefault(
+                item.id,
+                state.customIngredients
+              );
+              return {
+                ...item,
+                unit: item.unit ?? defaultUnit,
+                quantity:
+                  typeof item.quantity === 'number' && !Number.isNaN(item.quantity)
+                    ? item.quantity
+                    : defaultQuantity,
+                defaultUnit: item.defaultUnit ?? defaultUnit,
+                defaultQuantity: item.defaultQuantity ?? defaultQuantity,
+              };
+            });
+          }
+
+          if (Array.isArray(state.customIngredients)) {
+            state.customIngredients = state.customIngredients.map((item) => ({
+              ...item,
+              defaultUnit: item.defaultUnit ?? 'piece',
+              defaultQuantity:
+                typeof item.defaultQuantity === 'number' && !Number.isNaN(item.defaultQuantity)
+                  ? item.defaultQuantity
+                  : 1,
+            }));
+          }
+        }
+
+        if (version < 2) {
+          if (Array.isArray(state.stockIngredients)) {
+            state.stockIngredients = state.stockIngredients.map((item) => {
+              const { defaultUnit, defaultQuantity } = getIngredientDefault(
+                item.id,
+                state.customIngredients
+              );
+              const hasValidQuantity =
+                typeof item.quantity === 'number' && !Number.isNaN(item.quantity) && item.quantity > 0;
+              const hasValidUnit =
+                item.unit === 'piece' || item.unit === 'gram' || item.unit === 'pack';
+              return {
+                ...item,
+                unit: hasValidUnit ? item.unit : defaultUnit,
+                quantity: hasValidQuantity ? item.quantity : defaultQuantity,
+                defaultUnit: item.defaultUnit ?? defaultUnit,
+                defaultQuantity: item.defaultQuantity ?? defaultQuantity,
+              };
+            });
+          }
+
+          if (Array.isArray(state.customIngredients)) {
+            state.customIngredients = state.customIngredients.map((item) => {
+              const hasValidQty =
+                typeof item.defaultQuantity === 'number' &&
+                !Number.isNaN(item.defaultQuantity) &&
+                item.defaultQuantity > 0;
+              const hasValidUnit =
+                item.defaultUnit === 'piece' ||
+                item.defaultUnit === 'gram' ||
+                item.defaultUnit === 'pack';
+              return {
+                ...item,
+                defaultUnit: hasValidUnit ? item.defaultUnit : 'piece',
+                defaultQuantity: hasValidQty ? item.defaultQuantity : 1,
+              };
+            });
+          }
+        }
+
+        if (version < 3) {
+          if (Array.isArray(state.stockIngredients)) {
+            state.stockIngredients = state.stockIngredients.map((item) => {
+              const { defaultUnit, defaultQuantity } = getIngredientDefault(
+                item.id,
+                state.customIngredients
+              );
+              const hasValidQuantity =
+                typeof item.quantity === 'number' && !Number.isNaN(item.quantity) && item.quantity > 0;
+              const hasValidUnit =
+                item.unit === 'piece' || item.unit === 'gram' || item.unit === 'pack';
+              const hasValidDefaultUnit =
+                item.defaultUnit === 'piece' || item.defaultUnit === 'gram' || item.defaultUnit === 'pack';
+              const hasValidDefaultQty =
+                typeof item.defaultQuantity === 'number' &&
+                !Number.isNaN(item.defaultQuantity) &&
+                item.defaultQuantity > 0;
+              return {
+                ...item,
+                unit: hasValidUnit ? item.unit : defaultUnit,
+                quantity: hasValidQuantity ? item.quantity : defaultQuantity,
+                defaultUnit: hasValidDefaultUnit ? item.defaultUnit : defaultUnit,
+                defaultQuantity: hasValidDefaultQty ? item.defaultQuantity : defaultQuantity,
+              };
+            });
+          }
+
+          if (Array.isArray(state.customIngredients)) {
+            state.customIngredients = state.customIngredients.map((item) => {
+              const hasValidQty =
+                typeof item.defaultQuantity === 'number' &&
+                !Number.isNaN(item.defaultQuantity) &&
+                item.defaultQuantity > 0;
+              const hasValidUnit =
+                item.defaultUnit === 'piece' ||
+                item.defaultUnit === 'gram' ||
+                item.defaultUnit === 'pack';
+              return {
+                ...item,
+                defaultUnit: hasValidUnit ? item.defaultUnit : 'piece',
+                defaultQuantity: hasValidQty ? item.defaultQuantity : 1,
+              };
+            });
+          }
+        }
+
+        return state as any;
+      },
     }
   )
 );
@@ -329,11 +544,14 @@ export const getIngredientById = (id: string): Ingredient | undefined => {
 };
 
 export const formatQuantity = (quantity: number, unit: string): string => {
-  if (unit === 'gram' && quantity >= 1000) {
-    return `${(quantity / 1000).toFixed(1)}kg`;
+  const safeQty =
+    typeof quantity === 'number' && !Number.isNaN(quantity) ? Math.max(0, quantity) : 1;
+  const safeUnit = unit || '个';
+  if (safeUnit === 'gram' && safeQty >= 1000) {
+    return `${(safeQty / 1000).toFixed(1)}kg`;
   }
-  if (Number.isInteger(quantity)) {
-    return `${quantity}${unit}`;
+  if (Number.isInteger(safeQty)) {
+    return `${safeQty}${safeUnit}`;
   }
-  return `${quantity.toFixed(1)}${unit}`;
+  return `${safeQty.toFixed(1)}${safeUnit}`;
 };

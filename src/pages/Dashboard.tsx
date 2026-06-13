@@ -28,9 +28,10 @@ function getGreeting() {
 }
 
 export function Dashboard() {
-  const { stockIngredients, getStockByStatus, getMatchedRecipes } = useStore();
+  const { getStockWithStatus, getStockByStatus, getMatchedRecipes } = useStore();
   const { urgent, warning } = getStockByStatus();
   const matched = getMatchedRecipes();
+  const stockIngredients = getStockWithStatus();
 
   const totalIngredients = stockIngredients.length;
   const urgentCount = urgent.length;

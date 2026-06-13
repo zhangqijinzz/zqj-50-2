@@ -14,13 +14,14 @@ const FILTERS: { key: FilterKey; label: string; emoji: string }[] = [
 ];
 
 export function Recipes() {
-  const { getFilteredRecipes, getMatchedRecipes, preferences, togglePreference, stockIngredients, consumeRecipeIngredients } = useStore();
+  const { getFilteredRecipes, getMatchedRecipes, getStockWithStatus, preferences, togglePreference, consumeRecipeIngredients } = useStore();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [shuffleSeed, setShuffleSeed] = useState(0);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   const filtered = getFilteredRecipes();
   const allMatched = getMatchedRecipes();
+  const stockIngredients = getStockWithStatus();
 
   const displayRecipes = useMemo(() => {
     if (shuffleSeed === 0) return filtered;
