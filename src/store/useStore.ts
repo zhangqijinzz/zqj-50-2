@@ -68,7 +68,7 @@ const getSafeQuantity = (
   if (
     typeof item.quantity === 'number' &&
     !Number.isNaN(item.quantity) &&
-    item.quantity > 0
+    item.quantity >= 0
   ) {
     return item.quantity;
   }
@@ -150,7 +150,7 @@ export const useStore = create<StoreState>()(
       getStockQuantity: (ingredientId) => {
         const stock = get().stockIngredients.find(s => s.id === ingredientId);
         if (!stock) return 0;
-        if (typeof stock.quantity === 'number' && !Number.isNaN(stock.quantity) && stock.quantity > 0) {
+        if (typeof stock.quantity === 'number' && !Number.isNaN(stock.quantity) && stock.quantity >= 0) {
           return Math.max(0, stock.quantity);
         }
         const base = INGREDIENT_MAP[ingredientId];
@@ -213,7 +213,7 @@ export const useStore = create<StoreState>()(
             if (safeQty > 0) {
               consumed.push(ri.id);
             }
-            newStock[idx] = { ...stockItem, quantity: 0, unit: safeUnit };
+            newStock.splice(idx, 1);
           } else {
             const newQty = safeQty - ri.amount;
             consumed.push(ri.id);
@@ -252,14 +252,17 @@ export const useStore = create<StoreState>()(
 
       getStockWithStatus: () => {
         const now = today();
+        const customList = get().customIngredients;
         return get().stockIngredients
+          .filter((s) => {
+            const safeQty = getSafeQuantity(s, INGREDIENT_MAP, customList);
+            return safeQty > 0;
+          })
           .map((s) => {
             const base = INGREDIENT_MAP[s.id];
-            const safeUnit = s.unit ?? base?.defaultUnit ?? 'piece';
-            const safeQty =
-              typeof s.quantity === 'number' && !Number.isNaN(s.quantity)
-                ? Math.max(0, s.quantity)
-                : base?.defaultQuantity ?? 1;
+            const customList = get().customIngredients;
+            const safeUnit = getSafeUnit(s, INGREDIENT_MAP, customList);
+            const safeQty = getSafeQuantity(s, INGREDIENT_MAP, customList);
             const safeShelfLife = s.shelfLifeDays ?? base?.shelfLifeDays ?? 7;
             const expiryDate = new Date(s.purchaseDate || now);
             expiryDate.setDate(expiryDate.getDate() + safeShelfLife);
