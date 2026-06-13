@@ -9,6 +9,7 @@ import type {
   UserPreferences,
   Ingredient,
   IngredientCategory,
+  RecipeIngredient,
 } from '@/types';
 import { INGREDIENTS, INGREDIENT_MAP } from '@/data/ingredients';
 import { RECIPES } from '@/data/recipes';
@@ -18,10 +19,13 @@ interface StoreState {
   preferences: UserPreferences;
   customIngredients: Ingredient[];
 
-  addStockIngredient: (ingredientId: string, purchaseDate?: string) => void;
+  addStockIngredient: (ingredientId: string, purchaseDate?: string, quantity?: number) => void;
   removeStockIngredient: (ingredientId: string) => void;
   isInStock: (ingredientId: string) => boolean;
+  getStockQuantity: (ingredientId: string) => number;
+  updateStockQuantity: (ingredientId: string, quantity: number) => void;
   updatePurchaseDate: (ingredientId: string, purchaseDate: string) => void;
+  consumeRecipeIngredients: (recipeId: string) => { consumed: string[]; insufficient: string[] };
   togglePreference: (key: keyof UserPreferences) => void;
   addCustomIngredient: (ingredient: Ingredient) => void;
 
@@ -69,15 +73,27 @@ export const useStore = create<StoreState>()(
       preferences: initialPreferences,
       customIngredients: [],
 
-      addStockIngredient: (ingredientId, purchaseDate) => {
+      addStockIngredient: (ingredientId, purchaseDate, quantity) => {
         const base = INGREDIENT_MAP[ingredientId] ||
           get().customIngredients.find(i => i.id === ingredientId);
         if (!base) return;
-        if (get().isInStock(ingredientId)) return;
+
+        const existing = get().stockIngredients.find(s => s.id === ingredientId);
+        if (existing) {
+          const newQty = (quantity ?? base.defaultQuantity) + existing.quantity;
+          set({
+            stockIngredients: get().stockIngredients.map(s =>
+              s.id === ingredientId ? { ...s, quantity: newQty } : s
+            ),
+          });
+          return;
+        }
 
         const stock: StockIngredient = {
           ...base,
           purchaseDate: purchaseDate || today(),
+          quantity: quantity ?? base.defaultQuantity,
+          unit: base.defaultUnit,
         };
         set({ stockIngredients: [...get().stockIngredients, stock] });
       },
@@ -91,7 +107,25 @@ export const useStore = create<StoreState>()(
       },
 
       isInStock: (ingredientId) => {
-        return get().stockIngredients.some((s) => s.id === ingredientId);
+        const stock = get().stockIngredients.find(s => s.id === ingredientId);
+        return stock ? stock.quantity > 0 : false;
+      },
+
+      getStockQuantity: (ingredientId) => {
+        const stock = get().stockIngredients.find(s => s.id === ingredientId);
+        return stock ? stock.quantity : 0;
+      },
+
+      updateStockQuantity: (ingredientId, quantity) => {
+        if (quantity <= 0) {
+          get().removeStockIngredient(ingredientId);
+          return;
+        }
+        set({
+          stockIngredients: get().stockIngredients.map((s) =>
+            s.id === ingredientId ? { ...s, quantity } : s
+          ),
+        });
       },
 
       updatePurchaseDate: (ingredientId, purchaseDate) => {
@@ -100,6 +134,45 @@ export const useStore = create<StoreState>()(
             s.id === ingredientId ? { ...s, purchaseDate } : s
           ),
         });
+      },
+
+      consumeRecipeIngredients: (recipeId) => {
+        const recipe = RECIPES.find(r => r.id === recipeId);
+        if (!recipe) return { consumed: [], insufficient: [] };
+
+        const consumed: string[] = [];
+        const insufficient: string[] = [];
+        const newStock = [...get().stockIngredients];
+
+        for (const ri of recipe.requiredIngredients) {
+          if (ri.amount <= 0) continue;
+
+          const idx = newStock.findIndex(s => s.id === ri.id);
+          if (idx === -1) {
+            insufficient.push(ri.id);
+            continue;
+          }
+
+          const stockItem = newStock[idx];
+          if (stockItem.quantity < ri.amount) {
+            insufficient.push(ri.id);
+            if (stockItem.quantity > 0) {
+              consumed.push(ri.id);
+            }
+            newStock[idx] = { ...stockItem, quantity: 0 };
+          } else {
+            const newQty = stockItem.quantity - ri.amount;
+            consumed.push(ri.id);
+            if (newQty <= 0) {
+              newStock.splice(idx, 1);
+            } else {
+              newStock[idx] = { ...stockItem, quantity: newQty };
+            }
+          }
+        }
+
+        set({ stockIngredients: newStock });
+        return { consumed, insufficient };
       },
 
       togglePreference: (key) => {
@@ -151,30 +224,55 @@ export const useStore = create<StoreState>()(
       },
 
       getStockIds: () => {
-        return get().stockIngredients.map((s) => s.id);
+        return get().stockIngredients.filter(s => s.quantity > 0).map((s) => s.id);
       },
 
       getMatchedRecipes: () => {
-        const stockIds = get().getStockIds();
+        const stockMap: Record<string, number> = {};
+        for (const s of get().stockIngredients) {
+          stockMap[s.id] = s.quantity;
+        }
+
         const matched: MatchedRecipe[] = [];
 
         for (const recipe of RECIPES) {
-          const matchedIds = recipe.requiredIngredients.filter((id) =>
-            stockIds.includes(id)
-          );
-          if (matchedIds.length === 0) continue;
+          const sufficientIds: string[] = [];
+          const insufficientIds: string[] = [];
+          const missingIds: string[] = [];
 
-          const matchPercentage = Math.round(
-            (matchedIds.length / recipe.requiredIngredients.length) * 100
-          );
-          const missingIds = recipe.requiredIngredients.filter(
-            (id) => !stockIds.includes(id)
-          );
+          for (const ri of recipe.requiredIngredients) {
+            const stockQty = stockMap[ri.id] ?? 0;
+            if (stockQty <= 0) {
+              missingIds.push(ri.id);
+            } else if (ri.amount <= 0 || stockQty >= ri.amount) {
+              sufficientIds.push(ri.id);
+            } else {
+              insufficientIds.push(ri.id);
+            }
+          }
+
+          const totalIngredients = recipe.requiredIngredients.length;
+          if (sufficientIds.length === 0 && insufficientIds.length === 0) continue;
+
+          let matchScore = 0;
+          for (const ri of recipe.requiredIngredients) {
+            const stockQty = stockMap[ri.id] ?? 0;
+            if (ri.amount <= 0) {
+              matchScore += stockQty > 0 ? 1 : 0;
+            } else if (stockQty >= ri.amount) {
+              matchScore += 1;
+            } else if (stockQty > 0) {
+              matchScore += stockQty / ri.amount * 0.7;
+            }
+          }
+
+          const matchPercentage = Math.min(100, Math.round((matchScore / totalIngredients) * 100));
 
           matched.push({
             ...recipe,
             matchPercentage,
-            matchedIngredients: matchedIds,
+            matchedIngredients: sufficientIds,
+            insufficientIngredients: insufficientIds,
             missingIngredients: missingIds,
           });
         }
@@ -228,4 +326,14 @@ export const useStore = create<StoreState>()(
 export { RECIPES as RECIPE_DATA };
 export const getIngredientById = (id: string): Ingredient | undefined => {
   return INGREDIENT_MAP[id];
+};
+
+export const formatQuantity = (quantity: number, unit: string): string => {
+  if (unit === 'gram' && quantity >= 1000) {
+    return `${(quantity / 1000).toFixed(1)}kg`;
+  }
+  if (Number.isInteger(quantity)) {
+    return `${quantity}${unit}`;
+  }
+  return `${quantity.toFixed(1)}${unit}`;
 };

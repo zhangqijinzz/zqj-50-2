@@ -1,9 +1,10 @@
 import { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useStore, getIngredientById } from '@/store/useStore';
+import { useStore, getIngredientById, formatQuantity } from '@/store/useStore';
 import { Link } from 'react-router-dom';
-import { Clock, ChefHat, X, ChevronDown, ChevronUp, Filter, Sparkles, UtensilsCrossed, AlertCircle, Carrot } from 'lucide-react';
+import { Clock, ChefHat, X, ChevronDown, ChevronUp, Filter, Sparkles, UtensilsCrossed, AlertCircle, Carrot, Check, AlertTriangle, Utensils } from 'lucide-react';
 import type { MatchedRecipe, FilterKey } from '@/types';
+import { UNIT_LABELS } from '@/types';
 
 const FILTERS: { key: FilterKey; label: string; emoji: string }[] = [
   { key: 'onePot', label: '一锅优先', emoji: '🍲' },
@@ -13,9 +14,10 @@ const FILTERS: { key: FilterKey; label: string; emoji: string }[] = [
 ];
 
 export function Recipes() {
-  const { getFilteredRecipes, getMatchedRecipes, preferences, togglePreference, stockIngredients } = useStore();
+  const { getFilteredRecipes, getMatchedRecipes, preferences, togglePreference, stockIngredients, consumeRecipeIngredients } = useStore();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [shuffleSeed, setShuffleSeed] = useState(0);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   const filtered = getFilteredRecipes();
   const allMatched = getMatchedRecipes();
@@ -27,6 +29,22 @@ export function Recipes() {
   }, [filtered, shuffleSeed]);
 
   const activeFilters = Object.values(preferences).filter(Boolean).length;
+
+  const handleFinishCooking = (recipeId: string, recipeName: string) => {
+    const result = consumeRecipeIngredients(recipeId);
+    const consumedCount = result.consumed.length;
+    const insufficientCount = result.insufficient.length;
+
+    if (consumedCount > 0 || insufficientCount > 0) {
+      let msg = `🍳 ${recipeName} 已完成！`;
+      if (insufficientCount > 0) {
+        msg += ` 其中 ${insufficientCount} 种食材用完啦`;
+      }
+      setToastMsg(msg);
+      setTimeout(() => setToastMsg(null), 2500);
+    }
+    setExpandedId(null);
+  };
 
   return (
     <div className="min-h-screen pb-36">
@@ -150,12 +168,29 @@ export function Recipes() {
                   onToggle={() =>
                     setExpandedId(expandedId === recipe.id ? null : recipe.id)
                   }
+                  onFinishCooking={() => handleFinishCooking(recipe.id, recipe.name)}
                 />
               ))}
             </AnimatePresence>
           </div>
         )}
       </div>
+
+      <AnimatePresence>
+        {toastMsg && (
+          <motion.div
+            initial={{ opacity: 0, y: 20, scale: 0.9 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -20, scale: 0.9 }}
+            className="fixed top-20 left-1/2 -translate-x-1/2 z-[80]"
+          >
+            <div className="bg-gray-800/95 text-white px-5 py-3 rounded-2xl shadow-xl backdrop-blur-sm flex items-center gap-2">
+              <Check size={18} className="text-fresh" />
+              <span className="text-sm font-medium">{toastMsg}</span>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -165,13 +200,18 @@ function RecipeCard({
   index,
   expanded,
   onToggle,
+  onFinishCooking,
 }: {
   recipe: MatchedRecipe;
   index: number;
   expanded: boolean;
   onToggle: () => void;
+  onFinishCooking: () => void;
 }) {
-  const { matchPercentage, tags, cookTimeMinutes, potCount, coverEmoji, name, description, requiredIngredients, matchedIngredients, missingIngredients, steps } = recipe;
+  const { matchPercentage, tags, cookTimeMinutes, potCount, coverEmoji, name, description, requiredIngredients, matchedIngredients, insufficientIngredients, missingIngredients } = recipe;
+
+  const hasInsufficient = insufficientIngredients.length > 0;
+  const isPartiallyAvailable = hasInsufficient && matchedIngredients.length === 0;
 
   const matchColor =
     matchPercentage >= 80
@@ -187,6 +227,29 @@ function RecipeCard({
       ? 'stroke-warn'
       : 'stroke-brand-400';
 
+  const getIngredientAmount = (id: string) => {
+    const ri = requiredIngredients.find(r => r.id === id);
+    return ri ? ri.amount : 0;
+  };
+
+  const getStatusBadge = () => {
+    if (hasInsufficient) {
+      return (
+        <span className="chip-yellow">
+          <AlertTriangle size={11} /> 部分食材不足
+        </span>
+      );
+    }
+    if (matchPercentage >= 100) {
+      return (
+        <span className="chip-green">
+          <Check size={11} /> 食材齐全
+        </span>
+      );
+    }
+    return null;
+  };
+
   return (
     <motion.div
       layout
@@ -194,8 +257,11 @@ function RecipeCard({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -20 }}
       transition={{ delay: index * 0.04 }}
+      className={isPartiallyAvailable ? 'opacity-70' : ''}
     >
-      <div className="card overflow-hidden hover:shadow-float transition-all duration-300">
+      <div className={`card overflow-hidden hover:shadow-float transition-all duration-300 ${
+        isPartiallyAvailable ? 'border border-dashed border-warn/40' : ''
+      }`}>
         <button onClick={onToggle} className="w-full text-left p-5">
           <div className="flex gap-4">
             <div className="relative flex-shrink-0">
@@ -258,22 +324,36 @@ function RecipeCard({
                 {tags.lessDishes && <span className="chip-green">🧽 少洗</span>}
                 {tags.vegetarian && <span className="chip-green">🥗 素</span>}
               </div>
+              {getStatusBadge() && (
+                <div className="mb-2">{getStatusBadge()}</div>
+              )}
               <div className="flex flex-wrap gap-1">
-                {requiredIngredients.slice(0, 5).map((id) => {
-                  const ing = getIngredientById(id);
-                  const matched = matchedIngredients.includes(id);
+                {requiredIngredients.slice(0, 5).map((ri) => {
+                  const ing = getIngredientById(ri.id);
+                  const isSufficient = matchedIngredients.includes(ri.id);
+                  const isInsufficient = insufficientIngredients.includes(ri.id);
                   if (!ing) return null;
+
+                  let statusClass = '';
+                  if (isSufficient) {
+                    statusClass = 'bg-fresh/10 text-fresh-dark';
+                  } else if (isInsufficient) {
+                    statusClass = 'bg-warn/10 text-warn-dark';
+                  } else {
+                    statusClass = 'bg-gray-100 text-gray-400 line-through';
+                  }
+
                   return (
                     <span
-                      key={id}
-                      className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] ${
-                        matched
-                          ? 'bg-fresh/10 text-fresh-dark'
-                          : 'bg-gray-100 text-gray-400 line-through'
-                      }`}
+                      key={ri.id}
+                      className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] ${statusClass}`}
                     >
                       <span>{ing.emoji}</span>
-                      {ing.name}
+                      {ri.amount > 0 ? (
+                        <span>{formatQuantity(ri.amount, UNIT_LABELS[ing.defaultUnit])}</span>
+                      ) : (
+                        <span>{ing.name}</span>
+                      )}
                     </span>
                   );
                 })}
@@ -297,16 +377,50 @@ function RecipeCard({
               className="overflow-hidden border-t border-cream-200"
             >
               <div className="p-5 pt-4 space-y-5">
-                {missingIngredients.length > 0 && (
-                  <div className="bg-warn/5 border border-warn/20 rounded-2xl p-4">
-                    <div className="flex items-center gap-2 text-warn-dark text-xs font-medium mb-2">
-                      <AlertCircle size={14} />
-                      还需要这些食材
+
+                {matchedIngredients.length > 0 && (
+                  <div className="bg-gradient-to-r from-fresh/5 to-emerald-50 rounded-2xl p-4">
+                    <div className="flex items-center gap-2 text-fresh-dark text-xs font-medium mb-2">
+                      <Check size={14} />
+                      食材充足 ({matchedIngredients.length})
                     </div>
                     <div className="flex flex-wrap gap-2">
-                      {missingIngredients.map((id) => {
+                      {matchedIngredients.map((id) => {
                         const ing = getIngredientById(id);
-                        if (!ing) return null;
+                        const ri = requiredIngredients.find(r => r.id === id);
+                        if (!ing || !ri) return null;
+                        return (
+                          <span
+                            key={id}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white shadow-sm text-xs font-medium text-gray-700"
+                          >
+                            <span className="text-base">{ing.emoji}</span>
+                            {ing.name}
+                            {ri.amount > 0 && (
+                              <span className="text-fresh-dark">
+                                {formatQuantity(ri.amount, UNIT_LABELS[ing.defaultUnit])} ✓
+                              </span>
+                            )}
+                            {ri.amount <= 0 && <span className="text-fresh-dark">✓</span>}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {insufficientIngredients.length > 0 && (
+                  <div className="bg-warn/5 border border-warn/20 rounded-2xl p-4">
+                    <div className="flex items-center gap-2 text-warn-dark text-xs font-medium mb-2">
+                      <AlertTriangle size={14} />
+                      数量不足 ({insufficientIngredients.length})
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {insufficientIngredients.map((id) => {
+                        const ing = getIngredientById(id);
+                        const ri = requiredIngredients.find(r => r.id === id);
+                        const stockQty = useStore.getState().getStockQuantity(id);
+                        if (!ing || !ri) return null;
                         return (
                           <span
                             key={id}
@@ -314,6 +428,41 @@ function RecipeCard({
                           >
                             <span>{ing.emoji}</span>
                             {ing.name}
+                            <span className="text-warn-dark">
+                              需{formatQuantity(ri.amount, UNIT_LABELS[ing.defaultUnit])}
+                            </span>
+                            <span className="text-gray-400">/</span>
+                            <span className="text-gray-500">
+                              剩{formatQuantity(stockQty, UNIT_LABELS[ing.defaultUnit])}
+                            </span>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {missingIngredients.length > 0 && (
+                  <div className="bg-gray-50 border border-gray-200 rounded-2xl p-4">
+                    <div className="flex items-center gap-2 text-gray-500 text-xs font-medium mb-2">
+                      <AlertCircle size={14} />
+                      还需要这些食材
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {missingIngredients.map((id) => {
+                        const ing = getIngredientById(id);
+                        const ri = requiredIngredients.find(r => r.id === id);
+                        if (!ing || !ri) return null;
+                        return (
+                          <span
+                            key={id}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white border border-gray-200 text-xs text-gray-400 line-through"
+                          >
+                            <span>{ing.emoji}</span>
+                            {ing.name}
+                            {ri.amount > 0 && (
+                              <span>{formatQuantity(ri.amount, UNIT_LABELS[ing.defaultUnit])}</span>
+                            )}
                           </span>
                         );
                       })}
@@ -327,7 +476,7 @@ function RecipeCard({
                     烹饪步骤
                   </div>
                   <ol className="space-y-3">
-                    {steps.map((step, i) => (
+                    {recipe.steps.map((step, i) => (
                       <motion.li
                         key={i}
                         initial={{ opacity: 0, x: -10 }}
@@ -344,24 +493,16 @@ function RecipeCard({
                   </ol>
                 </div>
 
-                <div className="bg-gradient-to-r from-brand-50 to-amber-50 rounded-2xl p-4">
-                  <div className="text-xs text-gray-500 mb-1">你已拥有的食材</div>
-                  <div className="flex flex-wrap gap-2">
-                    {matchedIngredients.map((id) => {
-                      const ing = getIngredientById(id);
-                      if (!ing) return null;
-                      return (
-                        <span
-                          key={id}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-white shadow-sm text-xs font-medium text-gray-700"
-                        >
-                          <span className="text-base">{ing.emoji}</span>
-                          {ing.name}
-                          <span className="text-fresh-dark">✓</span>
-                        </span>
-                      );
-                    })}
-                  </div>
+                <div className="pt-2">
+                  <button
+                    onClick={onFinishCooking}
+                    className="w-full btn-primary !py-3 text-base"
+                  >
+                    <Utensils size={18} /> 做完这顿，扣减食材
+                  </button>
+                  <p className="text-center text-xs text-gray-400 mt-2">
+                    点击后会按菜谱用量从库存中扣除食材
+                  </p>
                 </div>
               </div>
             </motion.div>

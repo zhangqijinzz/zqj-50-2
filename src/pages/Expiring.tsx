@@ -1,8 +1,9 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import { useStore, getIngredientById } from '@/store/useStore';
+import { useStore, getIngredientById, formatQuantity } from '@/store/useStore';
 import { Link } from 'react-router-dom';
-import { CalendarDays, AlertTriangle, Clock, Sparkles, ChefHat, Trash2, Carrot } from 'lucide-react';
+import { CalendarDays, AlertTriangle, Clock, Sparkles, ChefHat, Trash2, Carrot, Scale } from 'lucide-react';
 import type { StockIngredientWithStatus, ExpiryStatus } from '@/types';
+import { UNIT_LABELS } from '@/types';
 
 const statusConfig: Record<ExpiryStatus, { label: string; chipClass: string; barClass: string; bgClass: string; text: string }> = {
   expired: {
@@ -300,12 +301,12 @@ function TimelineItem({
                 </div>
                 <div className="flex items-center gap-3 text-xs text-gray-500">
                   <span className="inline-flex items-center gap-1">
-                    <CalendarDays size={11} />
-                    到期 {expiryDate.toISOString().slice(5, 10)}
+                    <Scale size={11} />
+                    剩余 {formatQuantity(item.quantity, UNIT_LABELS[item.unit])}
                   </span>
                   <span className="inline-flex items-center gap-1">
-                    <Clock size={11} />
-                    入库 {item.purchaseDate.slice(5)}
+                    <CalendarDays size={11} />
+                    到期 {expiryDate.toISOString().slice(5, 10)}
                   </span>
                 </div>
               </div>

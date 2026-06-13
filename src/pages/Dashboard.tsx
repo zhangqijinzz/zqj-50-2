@@ -1,7 +1,8 @@
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { useStore } from '@/store/useStore';
-import { Sparkles, Carrot, UtensilsCrossed, AlertTriangle, ChevronRight, RefreshCw } from 'lucide-react';
+import { useStore, formatQuantity } from '@/store/useStore';
+import { Sparkles, Carrot, UtensilsCrossed, AlertTriangle, ChevronRight, RefreshCw, Scale } from 'lucide-react';
+import { UNIT_LABELS } from '@/types';
 import type { StockIngredientWithStatus } from '@/types';
 
 const containerVariants = {
@@ -118,6 +119,20 @@ export function Dashboard() {
                       <div className="flex items-center gap-2 flex-wrap">
                         <span className="chip-blue">
                           ⏱️ {topRecipe.cookTimeMinutes}分钟
+                        </span>
+                        <span className={`${
+                          topRecipe.insufficientIngredients.length > 0
+                            ? 'bg-warn/10 text-warn border border-warn/20'
+                            : 'chip-green'
+                        }`} style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          padding: '0.25rem 0.625rem',
+                          borderRadius: '9999px',
+                          fontSize: '0.75rem',
+                          fontWeight: 500,
+                        }}>
+                          {topRecipe.insufficientIngredients.length > 0 ? '部分食材不足' : '食材齐全'}
                         </span>
                         <span className="chip-green">
                           匹配度 {topRecipe.matchPercentage}%
@@ -248,6 +263,12 @@ function UrgentCard({ item, index }: { item: StockIngredientWithStatus; index: n
       <div className="text-4xl text-center mb-2">{item.emoji}</div>
       <div className="text-sm font-medium text-gray-800 text-center mb-1 truncate">
         {item.name}
+      </div>
+      <div className="text-center mb-1">
+        <span className="text-xs text-gray-500 flex items-center justify-center gap-0.5">
+          <Scale size={10} />
+          {formatQuantity(item.quantity, UNIT_LABELS[item.unit])}
+        </span>
       </div>
       <div className="text-center">
         <span className="chip-red">

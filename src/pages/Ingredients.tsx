@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useStore } from '@/store/useStore';
+import { useStore, formatQuantity } from '@/store/useStore';
 import { CATEGORY_LABELS } from '@/data/ingredients';
-import { Plus, Calendar, Check, X, PlusCircle } from 'lucide-react';
-import type { IngredientCategory, Ingredient } from '@/types';
+import { UNIT_LABELS } from '@/types';
+import { Plus, Calendar, Check, X, PlusCircle, Scale, Minus, Plus as PlusIcon } from 'lucide-react';
+import type { IngredientCategory, Ingredient, UnitType } from '@/types';
 
 const categories: IngredientCategory[] = ['vegetable', 'protein', 'staple', 'seasoning'];
 
@@ -11,6 +12,7 @@ export function Ingredients() {
   const [activeCategory, setActiveCategory] = useState<IngredientCategory>('vegetable');
   const [showAddModal, setShowAddModal] = useState(false);
   const [datePickerFor, setDatePickerFor] = useState<string | null>(null);
+  const [quantityPickerFor, setQuantityPickerFor] = useState<string | null>(null);
 
   const {
     getIngredientsByCategory,
@@ -18,6 +20,8 @@ export function Ingredients() {
     addStockIngredient,
     removeStockIngredient,
     updatePurchaseDate,
+    updateStockQuantity,
+    getStockQuantity,
     stockIngredients,
     addCustomIngredient,
   } = useStore();
@@ -98,6 +102,7 @@ export function Ingredients() {
           {ingredients.map((ing, idx) => {
             const selected = isInStock(ing.id);
             const stock = stockIngredients.find((s) => s.id === ing.id);
+            const qty = getStockQuantity(ing.id);
             return (
               <motion.div
                 key={ing.id}
@@ -142,20 +147,36 @@ export function Ingredients() {
                     </motion.div>
                   )}
                   {stock && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDatePickerFor(ing.id);
-                      }}
-                      className={`absolute bottom-1.5 left-1.5 text-[10px] px-2 py-0.5 rounded-full flex items-center gap-0.5 ${
-                        selected
-                          ? 'bg-white/30 text-white backdrop-blur-sm'
-                          : 'bg-cream-100 text-gray-500'
-                      }`}
-                    >
-                      <Calendar size={10} />
-                      {stock.purchaseDate.slice(5)}
-                    </button>
+                    <div className="absolute bottom-1.5 left-1.5 right-1.5 flex gap-1">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDatePickerFor(ing.id);
+                        }}
+                        className={`text-[10px] px-1.5 py-0.5 rounded-full flex items-center gap-0.5 flex-1 justify-center ${
+                          selected
+                            ? 'bg-white/30 text-white backdrop-blur-sm'
+                            : 'bg-cream-100 text-gray-500'
+                        }`}
+                      >
+                        <Calendar size={10} />
+                        {stock.purchaseDate.slice(5)}
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setQuantityPickerFor(ing.id);
+                        }}
+                        className={`text-[10px] px-1.5 py-0.5 rounded-full flex items-center gap-0.5 flex-1 justify-center ${
+                          selected
+                            ? 'bg-white/30 text-white backdrop-blur-sm'
+                            : 'bg-cream-100 text-gray-500'
+                        }`}
+                      >
+                        <Scale size={10} />
+                        {formatQuantity(qty, UNIT_LABELS[stock.unit])}
+                      </button>
+                    </div>
                   )}
                 </button>
               </motion.div>
@@ -221,6 +242,9 @@ export function Ingredients() {
                   >
                     <span className="text-lg">{s.emoji}</span>
                     <span className="text-gray-700">{s.name}</span>
+                    <span className="text-gray-500 text-xs">
+                      {formatQuantity(s.quantity, UNIT_LABELS[s.unit])}
+                    </span>
                     <button
                       onClick={() => removeStockIngredient(s.id)}
                       className="w-5 h-5 rounded-full bg-white/80 hover:bg-white text-gray-500 hover:text-danger flex items-center justify-center ml-1 transition-colors"
@@ -251,6 +275,24 @@ export function Ingredients() {
             ingredientName={
               stockIngredients.find((s) => s.id === datePickerFor)?.name || ''
             }
+          />
+        )}
+        {quantityPickerFor && (
+          <QuantityPickerModal
+            ingredientId={quantityPickerFor}
+            currentQuantity={getStockQuantity(quantityPickerFor)}
+            unit={
+              stockIngredients.find((s) => s.id === quantityPickerFor)?.unit ||
+              'piece'
+            }
+            ingredientName={
+              stockIngredients.find((s) => s.id === quantityPickerFor)?.name || ''
+            }
+            onClose={() => setQuantityPickerFor(null)}
+            onSave={(qty) => {
+              updateStockQuantity(quantityPickerFor, qty);
+              setQuantityPickerFor(null);
+            }}
           />
         )}
         {showAddModal && (
@@ -322,6 +364,109 @@ function DatePickerModal({
   );
 }
 
+function QuantityPickerModal({
+  ingredientId: _ingredientId,
+  currentQuantity,
+  unit,
+  ingredientName,
+  onClose,
+  onSave,
+}: {
+  ingredientId: string;
+  currentQuantity: number;
+  unit: UnitType;
+  ingredientName: string;
+  onClose: () => void;
+  onSave: (quantity: number) => void;
+}) {
+  const [quantity, setQuantity] = useState(currentQuantity);
+  const unitLabel = UNIT_LABELS[unit];
+
+  const step = unit === 'gram' ? 50 : 0.5;
+  const min = unit === 'gram' ? 50 : 0.5;
+
+  const handleStep = (delta: number) => {
+    const newQty = Math.max(min, +(quantity + delta).toFixed(2));
+    setQuantity(newQty);
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ y: 100, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: 100, opacity: 0 }}
+        transition={{ type: 'spring', damping: 25 }}
+        className="bg-white rounded-t-3xl sm:rounded-3xl w-full max-w-sm p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="font-display text-xl text-gray-800 mb-1">
+          ⚖️ 调整数量
+        </h3>
+        <p className="text-sm text-gray-500 mb-5">{ingredientName}</p>
+
+        <div className="bg-cream-50 rounded-2xl p-6 mb-5">
+          <div className="flex items-center justify-center gap-6">
+            <button
+              onClick={() => handleStep(-step)}
+              className="w-14 h-14 rounded-full bg-white shadow-sm flex items-center justify-center text-brand-500 hover:bg-brand-50 active:scale-95 transition-all"
+            >
+              <Minus size={24} strokeWidth={2.5} />
+            </button>
+            <div className="text-center min-w-[100px]">
+              <div className="font-display text-4xl text-gray-800">
+                {Number.isInteger(quantity) ? quantity : quantity.toFixed(1)}
+              </div>
+              <div className="text-sm text-gray-500">{unitLabel}</div>
+            </div>
+            <button
+              onClick={() => handleStep(step)}
+              className="w-14 h-14 rounded-full bg-white shadow-sm flex items-center justify-center text-brand-500 hover:bg-brand-50 active:scale-95 transition-all"
+            >
+              <PlusIcon size={24} strokeWidth={2.5} />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex gap-2 mb-5">
+          {[
+            { label: '少量', value: unit === 'gram' ? 100 : unit === 'piece' ? 1 : 0.5 },
+            { label: '正常', value: unit === 'gram' ? 250 : unit === 'piece' ? 2 : 1 },
+            { label: '大量', value: unit === 'gram' ? 500 : unit === 'piece' ? 4 : 2 },
+          ].map((preset) => (
+            <button
+              key={preset.label}
+              onClick={() => setQuantity(preset.value)}
+              className={`flex-1 py-2 rounded-xl text-sm font-medium transition-all ${
+                quantity === preset.value
+                  ? 'bg-brand-500 text-white'
+                  : 'bg-cream-100 text-gray-600 hover:bg-cream-200'
+              }`}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex gap-3">
+          <button onClick={onClose} className="flex-1 btn-secondary">
+            取消
+          </button>
+          <button onClick={() => onSave(quantity)} className="flex-1 btn-primary">
+            <Check size={18} /> 保存
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 function AddIngredientModal({
   onClose,
   onAdd,
@@ -332,6 +477,8 @@ function AddIngredientModal({
   const [name, setName] = useState('');
   const [category, setCategory] = useState<IngredientCategory>('vegetable');
   const [shelfLife, setShelfLife] = useState(7);
+  const [defaultUnit, setDefaultUnit] = useState<UnitType>('piece');
+  const [defaultQuantity, setDefaultQuantity] = useState(1);
   const emojiOptions = ['🥬', '🥕', '🍅', '🥔', '🧅', '🥚', '🍗', '🥩', '🍚', '🍜', '🧂', '🫙', '🍎', '🍌'];
   const [emoji, setEmoji] = useState(emojiOptions[0]);
 
@@ -343,6 +490,8 @@ function AddIngredientModal({
       category,
       emoji,
       shelfLifeDays: shelfLife,
+      defaultUnit,
+      defaultQuantity,
     });
   };
 
@@ -427,6 +576,40 @@ function AddIngredientModal({
                 );
               })}
             </div>
+          </div>
+
+          <div>
+            <label className="text-sm font-medium text-gray-700 mb-2 block">计量单位</label>
+            <div className="grid grid-cols-3 gap-2">
+              {(['piece', 'gram', 'pack'] as UnitType[]).map((u) => (
+                <button
+                  key={u}
+                  onClick={() => setDefaultUnit(u)}
+                  className={`py-2 rounded-xl text-sm font-medium transition-all ${
+                    defaultUnit === u
+                      ? 'bg-brand-500 text-white'
+                      : 'bg-cream-50 text-gray-600 hover:bg-cream-100'
+                  }`}
+                >
+                  {UNIT_LABELS[u]}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="text-sm font-medium text-gray-700 mb-2 block">
+              默认数量：<span className="text-brand-500 font-bold">{defaultQuantity}</span> {UNIT_LABELS[defaultUnit]}
+            </label>
+            <input
+              type="range"
+              min={defaultUnit === 'gram' ? 100 : 0.5}
+              max={defaultUnit === 'gram' ? 1000 : 5}
+              step={defaultUnit === 'gram' ? 50 : 0.5}
+              value={defaultQuantity}
+              onChange={(e) => setDefaultQuantity(Number(e.target.value))}
+              className="w-full accent-brand-500"
+            />
           </div>
 
           <div>
